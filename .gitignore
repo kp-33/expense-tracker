@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.csv
+.matplotlib-cache/
+.DS_Store
+report/*.pdf
