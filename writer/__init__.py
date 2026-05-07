@@ -31,3 +31,21 @@ def mark_refunded(notion, page_id):
         page_id=page_id,
         properties={"Status": {"select": {"name": "Refunded"}}},
     )
+
+
+def ensure_subcategory_options(notion, data_source_id, names):
+    """Add any missing names to the Subcategory select options.
+    Returns the list of names that were newly added."""
+    ds = notion.data_sources.retrieve(data_source_id=data_source_id)
+    sub_prop = ds["properties"].get("Subcategory", {})
+    current = sub_prop.get("select", {}).get("options", [])
+    current_names = {o["name"] for o in current}
+    missing = [n for n in names if n not in current_names]
+    if not missing:
+        return []
+    new_options = current + [{"name": n} for n in missing]
+    notion.data_sources.update(
+        data_source_id=data_source_id,
+        properties={"Subcategory": {"select": {"options": new_options}}},
+    )
+    return missing

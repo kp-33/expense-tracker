@@ -14,9 +14,11 @@ from dotenv import load_dotenv
 from notion_client import Client
 
 from reader import fetch_existing_keys, find_matching_purchase, get_data_source_id, row_exists
-from writer import create_entry, mark_refunded
+from writer import create_entry, ensure_subcategory_options, mark_refunded
 
 # Bank-provided categorization → our enum (used as fallback when no merchant rule matches).
+# Note: "Food & Drink" maps to Dining as a default; the merchant rules below override
+# specific fast-food/snack/drink merchants to "Food".
 BANK_CATEGORY_MAP = {
     "Shopping": "Shopping",
     "Food & Drink": "Dining",
@@ -60,23 +62,50 @@ MERCHANT_RULES = [
     ("FOODLAND", "Grocery"),
     ("NAPILI MARKET", "Grocery"),
 
-    # Dining
+    # Food (fast food, snacks, takeout, drinks, treats, pet food).
+    # Per user's framework: "quick / casual / snack / treat / takeout / drinks".
+    ("BURGER KING", "Food"),
+    ("MCDONALD", "Food"),
+    ("TACO BELL", "Food"),
+    ("SUBWAY", "Food"),
+    ("WENDY", "Food"),
+    ("IN-N-OUT", "Food"),
+    ("SHAKE SHACK", "Food"),
+    ("KFC", "Food"),
+    ("PANERA", "Food"),
+    ("CHIPOTLE", "Food"),
+    ("FIVE GUYS", "Food"),
+    ("JACK IN THE BOX", "Food"),
+    ("CHICK-FIL-A", "Food"),
+    ("POPEYES", "Food"),
+    # Boba / bubble tea
+    ("HEYTEA", "Food"),
+    ("SHARETEA", "Food"),
+    ("GONG CHA", "Food"),
+    ("BOBA", "Food"),
+    ("KUNG FU TEA", "Food"),
+    # Donuts / pastries / chocolate / candy
+    ("DUNKIN", "Food"),
+    ("KRISPY KREME", "Food"),
+    ("DONUT", "Food"),
+    ("BAKERY", "Food"),
+    ("PASTRY", "Food"),
+    ("CHOCO", "Food"),
+    ("VENCHI", "Food"),
+    ("MEET FRESH", "Food"),
+    # Pet food (vet visits go to Doctor; food/treats go here)
+    ("CHEWY", "Food"),
+    ("SPOT TANGO", "Food"),
+
+    # Dining (sit-down, full meals)
     ("TST*", "Dining"),  # Toast POS — almost always restaurants
     ("SQ *", "Dining"),  # Square POS — usually small businesses; tweak if too aggressive
-    ("STARBUCKS", "Dining"),
+    ("STARBUCKS", "Dining"),  # ambiguous; default Dining (revisit if user prefers Food)
     ("PEET", "Dining"),
     ("BLUE BOTTLE", "Dining"),
-    ("DOORDASH", "Dining"),
+    ("DOORDASH", "Dining"),  # delivery of full meals; revisit if treated as Food
     ("GRUBHUB", "Dining"),
-    ("BURGER KING", "Dining"),
-    ("MCDONALD", "Dining"),
-    ("CHIPOTLE", "Dining"),
-    ("TACO BELL", "Dining"),
-    ("SUBWAY", "Dining"),
-    ("WENDY", "Dining"),
-    ("IN-N-OUT", "Dining"),
-    ("SHAKE SHACK", "Dining"),
-    ("PANERA", "Dining"),
+    ("UBER EATS", "Dining"),  # already routed above; keep here for clarity
     ("PIZZA", "Dining"),
     ("SUSHI", "Dining"),
     ("RAMEN", "Dining"),
@@ -180,10 +209,10 @@ def categorize(description: str, bank_category: str) -> str | None:
     return BANK_CATEGORY_MAP.get(bank_category)
 
 
-def subcategorize(category, txn_date, hawaii_ranges):
-    for start, end in hawaii_ranges:
+def subcategorize(category, txn_date, trip_ranges):
+    for trip_name, start, end in trip_ranges:
         if start <= txn_date <= end:
-            return "Hawaii"
+            return trip_name
     if category is None:
         return None
     if category in ESSENTIAL_CATEGORIES:
@@ -240,15 +269,21 @@ def parse_money(value: str) -> float:
     return float(cleaned)
 
 
-def parse_hawaii_ranges(values):
+def parse_trip_ranges(values):
+    """Parse --trip "NAME:YYYY-MM-DD:YYYY-MM-DD" entries.
+    Returns list of (name, start_date, end_date)."""
     ranges = []
     for v in values:
+        parts = v.split(":")
+        if len(parts) != 3:
+            sys.exit(f"--trip expects NAME:YYYY-MM-DD:YYYY-MM-DD, got: {v}")
+        name, start_s, end_s = parts
         try:
-            start_s, end_s = v.split(":")
-            ranges.append((datetime.strptime(start_s, "%Y-%m-%d").date(),
-                           datetime.strptime(end_s, "%Y-%m-%d").date()))
+            start = datetime.strptime(start_s, "%Y-%m-%d").date()
+            end = datetime.strptime(end_s, "%Y-%m-%d").date()
         except ValueError:
-            sys.exit(f"--hawaii expects YYYY-MM-DD:YYYY-MM-DD, got: {v}")
+            sys.exit(f"--trip dates must be YYYY-MM-DD, got: {v}")
+        ranges.append((name.strip(), start, end))
     return ranges
 
 
@@ -317,13 +352,15 @@ def _parse_all_activity(reader):
 def main():
     parser = argparse.ArgumentParser(description="Import a credit card statement CSV into the Notion expense DB.")
     parser.add_argument("csv_path", type=Path)
-    parser.add_argument("--hawaii", action="append", default=[],
-                        help="Hawaii trip date range, format YYYY-MM-DD:YYYY-MM-DD. Repeatable.")
+    parser.add_argument("--trip", action="append", default=[],
+                        help="Tag transactions in a date range with a trip subcategory. "
+                             "Format NAME:YYYY-MM-DD:YYYY-MM-DD (repeatable). "
+                             "If the trip name isn't in the Subcategory enum yet, it will be added to Notion.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Parse and categorize but do not write to Notion.")
     args = parser.parse_args()
 
-    hawaii_ranges = parse_hawaii_ranges(args.hawaii)
+    trip_ranges = parse_trip_ranges(args.trip)
 
     rows, skipped_payments = read_statement_csv(args.csv_path)
 
@@ -334,7 +371,7 @@ def main():
     unmapped = defaultdict(list)
     for r in rows:
         category = categorize(r["raw_description"], r["bank_category"])
-        subcategory = subcategorize(category, r["date"], hawaii_ranges)
+        subcategory = subcategorize(category, r["date"], trip_ranges)
         name = clean_name(r["raw_description"])
         entries.append({
             "date": r["date"],
@@ -363,6 +400,12 @@ def main():
 
         notion = Client(auth=token)
         data_source_id = get_data_source_id(notion, db_id)
+        if trip_ranges:
+            added = ensure_subcategory_options(
+                notion, data_source_id, [name for name, _, _ in trip_ranges]
+            )
+            for name in added:
+                print(f"  + Added Subcategory option to Notion: {name!r}")
         print(f"Querying existing Notion rows from {date_min} to {date_max}…")
         strict_existing, loose_existing = fetch_existing_keys(
             notion, data_source_id, date_min, date_max
