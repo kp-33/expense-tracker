@@ -22,19 +22,34 @@ Imports a credit card statement CSV into our shared Notion expense database. Aut
    ```
    Open `.env` and paste your token after `NOTION_TOKEN=`. The DB ID is already filled in.
 
+## Workflow (required)
+
+**Always dry-run first. Never push to Notion without reviewing the dry-run output.**
+
+The auto-categorizer is good but not perfect — it routinely miscategorizes new merchants, and Notion rows are tedious to fix manually after the fact. The dry-run is fast and catches problems before they land.
+
+1. Run with `--dry-run` and read the full output.
+2. Identify any miscategorizations, wrong name cleanup, or unmapped merchants.
+3. If anything's wrong: fix it (add a merchant rule, override a name, adjust a trip range) and re-dry-run. Iterate until the output is right.
+4. Only then drop `--dry-run` to push for real.
+
 ## Usage
 
 Download a CSV from chase.com → Account activity → download icon → CSV. Both per-card and "All Activity" formats work.
 
 ```bash
-# Dry-run first — shows what would happen, doesn't write to Notion
+# Step 1: dry-run — shows what would happen, doesn't touch Notion
 .venv/bin/python import.py /path/to/statement.csv --dry-run
 
-# Real import
+# Step 2: real import (only after reviewing the dry-run output)
 .venv/bin/python import.py /path/to/statement.csv
 
-# Tag a date range as Hawaii (subcategory). Repeat the flag for multiple trips.
-.venv/bin/python import.py /path/to/statement.csv --hawaii 2026-04-24:2026-04-30
+# Tag a date range as a trip subcategory. Repeat the flag for multiple trips.
+# If the trip name doesn't exist in Notion's Subcategory enum yet, it's added automatically.
+.venv/bin/python import.py /path/to/statement.csv \
+    --trip "Hawaii:2026-04-25:2026-04-29" \
+    --trip "Seattle:2026-04-06:2026-04-10" \
+    --dry-run
 ```
 
 ## How it works

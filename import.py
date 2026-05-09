@@ -45,6 +45,7 @@ MERCHANT_RULES = [
     ("MUNI", "Transportation"),
     ("PARKING", "Transportation"),
     ("PARKLINQ", "Transportation"),
+    ("GARAGE", "Transportation"),
     ("CALTRAIN", "Transportation"),
 
     # Grocery
@@ -93,6 +94,7 @@ MERCHANT_RULES = [
     ("CHOCO", "Food"),
     ("VENCHI", "Food"),
     ("MEET FRESH", "Food"),
+    ("MATCHA", "Food"),
     # Pet food (vet visits go to Doctor; food/treats go here)
     ("CHEWY", "Food"),
     ("SPOT TANGO", "Food"),
@@ -172,6 +174,9 @@ MERCHANT_RULES = [
     ("WAYFAIR", "Home Decor"),
     ("HOME DEPOT", "Home Decor"),
     ("LOWE'S", "Home Decor"),
+    ("TJMAXX", "Home Decor"),
+    ("TJ MAXX", "Home Decor"),
+    ("HOMEGOODS", "Home Decor"),
 
     # Clothing
     ("NORDSTROM", "Clothing"),
@@ -185,6 +190,9 @@ MERCHANT_RULES = [
     ("LULULEMON", "Clothing"),
     ("MAUI JIM", "Clothing"),  # sunglasses
     ("MALIBU SHIRTS", "Clothing"),
+    ("MARSHALLS", "Clothing"),  # user buys clothes here per Jan pattern
+    ("ARITZIA", "Clothing"),
+    ("FREE PEOPLE", "Clothing"),
 
     # Shopping (catch-alls — keep last)
     ("AMAZON", "Shopping"),
@@ -225,6 +233,7 @@ _POS_PREFIX_RE = re.compile(r"^(?:TST|SQ|SP|CP|GMS|PY|IN)\s*\*\s*", re.IGNORECAS
 # Per-merchant canonical-name overrides (matched on description, case-insensitive).
 NAME_OVERRIDES = [
     (re.compile(r"\b(AMAZON|AMZN)\b", re.IGNORECASE), "Amazon"),
+    (re.compile(r"\b(GYMPASS|WELLHUB)\b", re.IGNORECASE), "Wellhub"),
 ]
 
 
