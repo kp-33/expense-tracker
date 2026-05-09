@@ -35,12 +35,18 @@ def mark_refunded(notion, page_id):
 
 def ensure_subcategory_options(notion, data_source_id, names):
     """Add any missing names to the Subcategory select options.
-    Returns the list of names that were newly added."""
+    Returns the list of names that were newly added. Dedupes the input
+    so callers can pass overlapping name lists from --trip and --mark."""
     ds = notion.data_sources.retrieve(data_source_id=data_source_id)
     sub_prop = ds["properties"].get("Subcategory", {})
     current = sub_prop.get("select", {}).get("options", [])
     current_names = {o["name"] for o in current}
-    missing = [n for n in names if n not in current_names]
+    missing = []
+    seen = set()
+    for n in names:
+        if n not in current_names and n not in seen:
+            missing.append(n)
+            seen.add(n)
     if not missing:
         return []
     new_options = current + [{"name": n} for n in missing]

@@ -65,6 +65,7 @@ MERCHANT_RULES = [
 
     # Food (fast food, snacks, takeout, drinks, treats, pet food).
     # Per user's framework: "quick / casual / snack / treat / takeout / drinks".
+    ("CROISSANT", "Food"),  # bakery — must precede TST* to avoid being routed to Dining
     ("BURGER KING", "Food"),
     ("MCDONALD", "Food"),
     ("TACO BELL", "Food"),
@@ -95,6 +96,7 @@ MERCHANT_RULES = [
     ("VENCHI", "Food"),
     ("MEET FRESH", "Food"),
     ("MATCHA", "Food"),
+    ("JOECOFFEE", "Food"),
     # Pet food (vet visits go to Doctor; food/treats go here)
     ("CHEWY", "Food"),
     ("SPOT TANGO", "Food"),
@@ -118,6 +120,11 @@ MERCHANT_RULES = [
     ("KITCHEN", "Dining"),
     ("TEPPANYAKI", "Dining"),
     ("THAI", "Dining"),
+    ("BENIHANA", "Dining"),
+    ("TAQUERIA", "Dining"),
+    ("IGM WAILEA", "Dining"),
+    ("KALEI", "Dining"),
+    ("CHO DANG TOFU", "Dining"),
 
     # Utility
     ("PG&E", "Utility"),
@@ -144,6 +151,12 @@ MERCHANT_RULES = [
     ("BOOKING.COM", "Travel"),
     ("EXPEDIA", "Travel"),
     ("NATIONAL PAR", "Travel"),  # national park entry fees
+    ("CITI TRAVEL", "Travel"),
+    ("ALLSAVE CAR RENTAL", "Travel"),
+    ("CAR RENTAL", "Travel"),  # generic catch-all for rental car merchants
+    ("HERTZ", "Travel"),
+    ("AVIS", "Travel"),
+    ("ENTERPRISE RENT", "Travel"),
 
     # Health
     ("CVS", "Health"),
@@ -165,6 +178,7 @@ MERCHANT_RULES = [
     ("CINEMA", "Entertainment"),
     ("CINELUX", "Entertainment"),
     ("MOVIETICKET", "Entertainment"),
+    ("FH*", "Entertainment"),  # FareHarbor: tour/activity bookings
 
     # Home Decor
     ("IKEA", "Home Decor"),
@@ -203,9 +217,14 @@ MERCHANT_RULES = [
     ("APPLE.COM", "Shopping"),
     ("ABC #", "Shopping"),  # Hawaii ABC Stores — convenience
     ("MAUIPINEAPPLE", "Shopping"),  # MAUIPINEAPPLESTORE is one token; needs explicit prefix
+    ("TEMU", "Shopping"),
+    ("MEMBERSHIP FEE", "Shopping"),  # credit card annual fees
+
+    # Self Development (essential — gym, learning tools, productivity software)
+    ("CLAUDE.AI", "Self Development"),
 ]
 
-ESSENTIAL_CATEGORIES = {"Grocery", "Utility", "Mortgage", "Doctor", "Health"}
+ESSENTIAL_CATEGORIES = {"Grocery", "Utility", "Mortgage", "Doctor", "Health", "Self Development"}
 
 
 def categorize(description: str, bank_category: str) -> str | None:
@@ -217,7 +236,18 @@ def categorize(description: str, bank_category: str) -> str | None:
     return BANK_CATEGORY_MAP.get(bank_category)
 
 
-def subcategorize(category, txn_date, trip_ranges):
+def subcategorize(category, txn_date, description, trip_ranges, mark_rules):
+    """Compute the Subcategory value for a transaction.
+
+    Precedence (highest first):
+      1. Per-merchant overrides via --mark (substring match against description).
+      2. Trip date ranges via --trip.
+      3. Default: Essential if category is in ESSENTIAL_CATEGORIES, else Nonessential.
+    """
+    desc_upper = description.upper()
+    for needle, sub_name in mark_rules:
+        if needle.upper() in desc_upper:
+            return sub_name
     for trip_name, start, end in trip_ranges:
         if start <= txn_date <= end:
             return trip_name
@@ -296,6 +326,19 @@ def parse_trip_ranges(values):
     return ranges
 
 
+def parse_mark_rules(values):
+    """Parse --mark "MERCHANT_SUBSTRING:SUBCATEGORY" entries.
+    Returns list of (substring, subcategory_name). Match is case-insensitive substring."""
+    rules = []
+    for v in values:
+        try:
+            substring, sub_name = v.rsplit(":", 1)
+        except ValueError:
+            sys.exit(f"--mark expects SUBSTRING:SUBCATEGORY, got: {v}")
+        rules.append((substring.strip(), sub_name.strip()))
+    return rules
+
+
 def read_statement_csv(path):
     """Detect statement format by header and parse. Returns (rows, skipped_payments)."""
     with path.open(newline="", encoding="utf-8-sig") as f:
@@ -365,11 +408,16 @@ def main():
                         help="Tag transactions in a date range with a trip subcategory. "
                              "Format NAME:YYYY-MM-DD:YYYY-MM-DD (repeatable). "
                              "If the trip name isn't in the Subcategory enum yet, it will be added to Notion.")
+    parser.add_argument("--mark", action="append", default=[],
+                        help="Per-merchant subcategory override (takes precedence over --trip). "
+                             "Format SUBSTRING:SUBCATEGORY (repeatable). Useful for trip pre-bookings "
+                             "charged outside the trip dates, e.g. --mark \"PACWHALE:Hawaii\".")
     parser.add_argument("--dry-run", action="store_true",
                         help="Parse and categorize but do not write to Notion.")
     args = parser.parse_args()
 
     trip_ranges = parse_trip_ranges(args.trip)
+    mark_rules = parse_mark_rules(args.mark)
 
     rows, skipped_payments = read_statement_csv(args.csv_path)
 
@@ -380,7 +428,7 @@ def main():
     unmapped = defaultdict(list)
     for r in rows:
         category = categorize(r["raw_description"], r["bank_category"])
-        subcategory = subcategorize(category, r["date"], trip_ranges)
+        subcategory = subcategorize(category, r["date"], r["raw_description"], trip_ranges, mark_rules)
         name = clean_name(r["raw_description"])
         entries.append({
             "date": r["date"],
@@ -409,10 +457,9 @@ def main():
 
         notion = Client(auth=token)
         data_source_id = get_data_source_id(notion, db_id)
-        if trip_ranges:
-            added = ensure_subcategory_options(
-                notion, data_source_id, [name for name, _, _ in trip_ranges]
-            )
+        sub_names_needed = [name for name, _, _ in trip_ranges] + [n for _, n in mark_rules]
+        if sub_names_needed:
+            added = ensure_subcategory_options(notion, data_source_id, sub_names_needed)
             for name in added:
                 print(f"  + Added Subcategory option to Notion: {name!r}")
         print(f"Querying existing Notion rows from {date_min} to {date_max}…")
