@@ -47,6 +47,7 @@ MERCHANT_RULES = [
     ("PARKLINQ", "Transportation"),
     ("GARAGE", "Transportation"),
     ("CALTRAIN", "Transportation"),
+    ("CHARGEPOINT", "Transportation"),  # EV charging
 
     # Grocery
     ("WHOLE FOODS", "Grocery"),
@@ -162,6 +163,7 @@ MERCHANT_RULES = [
     ("CVS", "Health"),
     ("WALGREENS", "Health"),
     ("RITE AID", "Health"),
+    ("WHOOP", "Health"),
 
     # Doctor
     ("KAISER", "Doctor"),
@@ -377,7 +379,9 @@ def _parse_all_activity(reader):
     rows, skipped = [], 0
     for r in reader:
         desc = r.get("Description", "")
-        if "PAYMENT" in desc.upper():
+        desc_upper = desc.upper()
+        # Skip card payments — these are payments TO the card, not expenses.
+        if "PAYMENT" in desc_upper or "AUTOPAY" in desc_upper or "AUTO-PMT" in desc_upper:
             skipped += 1
             continue
         debit = (r.get("Debit") or "").strip()
@@ -403,7 +407,8 @@ def _parse_all_activity(reader):
 
 def main():
     parser = argparse.ArgumentParser(description="Import a credit card statement CSV into the Notion expense DB.")
-    parser.add_argument("csv_path", type=Path)
+    parser.add_argument("csv_paths", type=Path, nargs="+",
+                        help="One or more CSVs to process together as a single batch.")
     parser.add_argument("--trip", action="append", default=[],
                         help="Tag transactions in a date range with a trip subcategory. "
                              "Format NAME:YYYY-MM-DD:YYYY-MM-DD (repeatable). "
@@ -419,10 +424,16 @@ def main():
     trip_ranges = parse_trip_ranges(args.trip)
     mark_rules = parse_mark_rules(args.mark)
 
-    rows, skipped_payments = read_statement_csv(args.csv_path)
+    rows = []
+    skipped_payments = 0
+    for path in args.csv_paths:
+        path_rows, path_skipped = read_statement_csv(path)
+        rows.extend(path_rows)
+        skipped_payments += path_skipped
+        print(f"  Read {len(path_rows)} expense rows ({path_skipped} payments skipped) from {path.name}")
 
     if not rows:
-        sys.exit("No expense rows found in CSV.")
+        sys.exit("No expense rows found in CSV(s).")
 
     entries = []
     unmapped = defaultdict(list)

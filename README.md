@@ -26,6 +26,8 @@ Imports a credit card statement CSV into our shared Notion expense database. Aut
 
 **Always dry-run first. Never push to Notion without reviewing the dry-run output.**
 
+If you use Claude Code in this repo, the `expense-import` skill at `.claude/skills/expense-import/SKILL.md` is auto-loaded and walks Claude through the same workflow (dry-run → review → fix → push), the categorization principles, and the suspicious-expense flagging behavior. Treat it as the canonical guide; the rest of this section is a quick recap.
+
 The auto-categorizer is good but not perfect — it routinely miscategorizes new merchants, and Notion rows are tedious to fix manually after the fact. The dry-run is fast and catches problems before they land.
 
 1. Run with `--dry-run` and read the full output.
@@ -67,6 +69,7 @@ expense-tracker/
 ├── writer/            # Notion write operations (create, update, archive)
 ├── tests/             # unittest suite — run with `.venv/bin/python -m unittest discover tests`
 ├── report/            # generated monthly PDF reports (gitignored)
+├── .claude/skills/    # Claude Code skill: walks Claude through the import workflow
 ├── .env               # your token + DB ID (gitignored)
 ├── .env.example       # template
 └── requirements.txt
