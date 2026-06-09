@@ -1,8 +1,10 @@
-"""Generate a monthly PDF expense report from the Notion expense database.
+"""Generate a PDF expense report from the Notion expense database.
 
 Usage:
     python -m reader.report --month 2026-04
     python -m reader.report --month 2026-04 -o ~/Desktop/april.pdf
+    python -m reader.report --ytd                     # Jan 1 → today, current year
+    python -m reader.report --start 2026-01-01 --end 2026-06-08
 """
 
 import argparse
@@ -30,15 +32,12 @@ TOP_N_MERCHANTS = 10
 DEFAULT_REPORT_DIR = Path("report")
 
 
-def default_output_path(month):
-    return DEFAULT_REPORT_DIR / f"expense-report-{month}.pdf"
+def default_output_path(slug):
+    return DEFAULT_REPORT_DIR / f"expense-report-{slug}.pdf"
 
 
-def fetch_month_rows(notion, data_source_id, year, month):
-    """Fetch all rows in the given calendar month. Returns (rows, start, end)."""
-    start = date(year, month, 1)
-    end = date(year, month, calendar.monthrange(year, month)[1])
-
+def fetch_rows(notion, data_source_id, start, end):
+    """Fetch all expense rows with Date in [start, end] (inclusive)."""
     rows = []
     cursor = None
     while True:
@@ -69,7 +68,14 @@ def fetch_month_rows(notion, data_source_id, year, month):
         if not resp.get("has_more"):
             break
         cursor = resp.get("next_cursor")
-    return rows, start, end
+    return rows
+
+
+def fetch_month_rows(notion, data_source_id, year, month):
+    """Fetch all rows in the given calendar month. Returns (rows, start, end)."""
+    start = date(year, month, 1)
+    end = date(year, month, calendar.monthrange(year, month)[1])
+    return fetch_rows(notion, data_source_id, start, end), start, end
 
 
 def aggregate(rows):
@@ -79,14 +85,17 @@ def aggregate(rows):
     cat_totals = defaultdict(float)
     sub_totals = defaultdict(float)
     merchant_totals = defaultdict(float)
+    month_totals = defaultdict(float)
     for r in purchases:
         cat_totals[r["category"] or "(Uncategorized)"] += r["amount"]
         sub_totals[r["subcategory"] or "(Unset)"] += r["amount"]
         merchant_totals[r["name"]] += r["amount"]
+        month_totals[r["date"][:7]] += r["amount"]  # YYYY-MM
 
     cats_sorted = sorted(cat_totals.items(), key=lambda kv: -kv[1])
     subs_sorted = sorted(sub_totals.items(), key=lambda kv: -kv[1])
     top_merchants = sorted(merchant_totals.items(), key=lambda kv: -kv[1])[:TOP_N_MERCHANTS]
+    months_sorted = sorted(month_totals.items())  # chronological
 
     return {
         "total": total,
@@ -94,26 +103,33 @@ def aggregate(rows):
         "categories": cats_sorted,
         "subcategories": subs_sorted,
         "top_merchants": top_merchants,
+        "months": months_sorted,
     }
 
 
-def render_pdf(stats, start, end, output_path):
-    fig = plt.figure(figsize=(11, 14))
-    gs = fig.add_gridspec(3, 2, height_ratios=[0.5, 1.4, 1.4], hspace=0.45, wspace=0.25)
+def render_pdf(stats, start, end, output_path, title):
+    # Add a monthly-trend row when the period spans more than one month.
+    multi_month = len(stats["months"]) > 1
+    n_rows = 4 if multi_month else 3
+    height_ratios = [0.5, 1.4, 1.4] + ([1.0] if multi_month else [])
+    fig = plt.figure(figsize=(11, 14 if not multi_month else 17))
+    gs = fig.add_gridspec(n_rows, 2, height_ratios=height_ratios, hspace=0.45, wspace=0.25)
 
     # Header
     header_ax = fig.add_subplot(gs[0, :])
     header_ax.axis("off")
     header_ax.text(
-        0.0, 0.95,
-        f"Expense Report — {start.strftime('%B %Y')}",
+        0.0, 0.95, title,
         fontsize=22, fontweight="bold", va="top",
     )
+    avg = stats["total"] / len(stats["months"]) if stats["months"] else 0.0
     summary = (
         f"Period: {start.isoformat()} to {end.isoformat()}\n"
         f"Transactions: {stats['n_purchases']}\n"
         f"Total spend: ${stats['total']:,.2f}"
     )
+    if multi_month:
+        summary += f"\nAvg / month: ${avg:,.2f}  ({len(stats['months'])} months)"
     header_ax.text(0.0, 0.55, summary, fontsize=12, va="top", family="monospace")
 
     # Category bar (horizontal — better than pie for ~13 categories)
@@ -162,28 +178,73 @@ def render_pdf(stats, start, end, output_path):
     else:
         merch_ax.axis("off")
 
+    # Monthly trend (full width) — only for multi-month periods like YTD
+    if multi_month:
+        trend_ax = fig.add_subplot(gs[3, :])
+        months = [m for m, _ in stats["months"]]
+        values = [v for _, v in stats["months"]]
+        trend_ax.bar(months, values, color="#4C78A8")
+        trend_ax.set_title("Spend by Month", fontsize=13, fontweight="bold")
+        trend_ax.set_ylabel("Amount ($)")
+        for i, v in enumerate(values):
+            trend_ax.text(i, v, f"${v:,.0f}", ha="center", va="bottom", fontsize=9)
+        trend_ax.spines["top"].set_visible(False)
+        trend_ax.spines["right"].set_visible(False)
+
     fig.savefig(output_path, format="pdf", bbox_inches="tight")
     plt.close(fig)
 
 
+def resolve_period(args):
+    """Turn CLI args into (start, end, title, slug). Exits on bad input."""
+    if args.month:
+        try:
+            year_s, month_s = args.month.split("-")
+            year, month = int(year_s), int(month_s)
+            if not (1 <= month <= 12):
+                raise ValueError
+        except ValueError:
+            sys.exit(f"--month expects YYYY-MM, got: {args.month}")
+        start = date(year, month, 1)
+        end = date(year, month, calendar.monthrange(year, month)[1])
+        return start, end, f"Expense Report — {start.strftime('%B %Y')}", args.month
+
+    if args.ytd:
+        today = date.today()
+        start = date(today.year, 1, 1)
+        return start, today, f"Expense Report — {today.year} YTD", f"YTD-{today.year}"
+
+    # custom range
+    try:
+        start = date.fromisoformat(args.start)
+        end = date.fromisoformat(args.end)
+    except ValueError:
+        sys.exit("--start and --end expect YYYY-MM-DD")
+    if end < start:
+        sys.exit("--end must be on or after --start")
+    title = f"Expense Report — {start.isoformat()} to {end.isoformat()}"
+    return start, end, title, f"{start.isoformat()}_to_{end.isoformat()}"
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate a monthly PDF expense report from the Notion expense DB."
+        description="Generate a PDF expense report from the Notion expense DB."
     )
-    parser.add_argument("--month", required=True, help="YYYY-MM, e.g. 2026-04")
+    period = parser.add_mutually_exclusive_group(required=True)
+    period.add_argument("--month", help="YYYY-MM, e.g. 2026-04")
+    period.add_argument("--ytd", action="store_true",
+                        help="Year-to-date: Jan 1 of the current year through today")
+    period.add_argument("--start", help="Range start YYYY-MM-DD (use with --end)")
+    parser.add_argument("--end", help="Range end YYYY-MM-DD (use with --start)")
     parser.add_argument(
         "-o", "--output", type=Path, default=None,
-        help="Output PDF path. Default: ./report/expense-report-YYYY-MM.pdf",
+        help="Output PDF path. Default: ./report/expense-report-<period>.pdf",
     )
     args = parser.parse_args()
+    if bool(args.start) ^ bool(args.end):
+        sys.exit("--start and --end must be used together")
 
-    try:
-        year_s, month_s = args.month.split("-")
-        year, month = int(year_s), int(month_s)
-        if not (1 <= month <= 12):
-            raise ValueError
-    except ValueError:
-        sys.exit(f"--month expects YYYY-MM, got: {args.month}")
+    start, end, title, slug = resolve_period(args)
 
     load_dotenv(Path(__file__).resolve().parent.parent / ".env")
     token = os.environ.get("NOTION_TOKEN")
@@ -191,23 +252,23 @@ def main():
     if not token or not db_id:
         sys.exit("NOTION_TOKEN and NOTION_DATABASE_ID must be set in .env")
 
-    output = args.output or default_output_path(args.month)
+    output = args.output or default_output_path(slug)
     output.parent.mkdir(parents=True, exist_ok=True)
 
     notion = Client(auth=token)
     data_source_id = get_data_source_id(notion, db_id)
 
-    print(f"Fetching {args.month} expenses…")
-    rows, start, end = fetch_month_rows(notion, data_source_id, year, month)
+    print(f"Fetching expenses {start.isoformat()} → {end.isoformat()}…")
+    rows = fetch_rows(notion, data_source_id, start, end)
     if not rows:
-        sys.exit(f"No rows found in {args.month}.")
+        sys.exit(f"No rows found for {start.isoformat()} → {end.isoformat()}.")
     print(f"  Found {len(rows)} rows.")
 
     stats = aggregate(rows)
     print(f"  Total spend: ${stats['total']:,.2f} across {stats['n_purchases']} purchases")
 
     print(f"Writing PDF: {output}")
-    render_pdf(stats, start, end, output)
+    render_pdf(stats, start, end, output, title)
     print("Done.")
 
 
